@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.python-version
+uv.lock
+mlruns/
+*.egg-info/
+build/
+dist/
+*.nc
+*.csv
+!configurations/*.csv
+.DS_Store

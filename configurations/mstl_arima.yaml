@@ -1,0 +1,5 @@
+user_option_values:
+  n_samples: 100
+  log_transform: true
+  arima_approximation: false
+  arima_stepwise: true

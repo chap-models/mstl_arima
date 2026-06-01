@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chap-mstl-arima"
+version = "0.1.0"
+description = "MSTL + AutoARIMA baseline as a chap-compatible MLproject"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Knut Rand", email = "knutdrand@gmail.com"}]
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "statsforecast>=2.0.0",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "scipy>=1.11",
+    "pyyaml>=6.0",
+    "cyclopts>=2.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["chap_mstl_arima*"]
+exclude = ["tests*", "scripts*", "configurations*", "docs*"]
