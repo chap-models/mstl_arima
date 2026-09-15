@@ -12,6 +12,7 @@ class ModelConfig:
     random_seed: int = 42
     arima_approximation: bool = False
     arima_stepwise: bool = True
+    treat_missing_as_zero: bool = False
 
     @classmethod
     def from_user_options(cls, opts: dict) -> "ModelConfig":
