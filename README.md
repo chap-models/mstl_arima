@@ -53,7 +53,7 @@ The interactive API docs are at `http://localhost:9090/docs`, and chapkit's web 
 ## Train and predict over HTTP
 
 The full cycle with `example_data/monthly/`. This is the chap-core-shaped request body:
-the tunables go under `user_option_values`, which the service hoists onto its config
+the tunables go under `user_option_values`, which chapkit 2.1.0 and later hoists onto the config
 fields.
 
 Dataframes travel as `{"columns": [...], "data": [[...], ...]}` with `null` for missing

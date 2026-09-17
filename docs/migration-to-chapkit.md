@@ -10,7 +10,7 @@ every dead end. The primary audience is a future migration of another chap-model
 
 - **Base commit:** `20ef2f6` (`main`, PR #1 merged).
 - **Branch:** `feat/chapkit-service`.
-- **Target chapkit:** `>=2.0.1,<3`.
+- **Target chapkit:** `>=2.1.0,<3` (started on 2.0.1; see step 11).
 - **Runner:** `ShellModelRunner` with `config_format="chap_core"`.
 - **Machine:** macOS 27.0 (Darwin), arm64, uv 0.12.0, chap-core 2.3.0.
 
@@ -308,6 +308,10 @@ diverging from the shape every other chap-models script expects. `chap_core` is 
 default for a migration.
 
 ### The `user_option_values` hoisting validator - the single most important gotcha
+
+> Superseded in step 11: chapkit 2.1.0 performs this hoist in `BaseConfig` itself
+> (dhis2-chap/chapkit#110), so the validator was deleted from `main.py`. The section is
+> kept because it explains what chapkit now does and why it matters.
 
 chap-core creates a config with
 
@@ -820,6 +824,27 @@ Fix: `tests/test_service.py` and `scripts/parity.py` now apply numpy's rule
 Shape, column list and row order stay exact. Goldens unchanged. Commit
 `test(parity): add absolute tolerance for cross-platform ulp noise`.
 
+## Step 11: upgrade to chapkit 2.1.0 and drop the hoist
+
+The `user_option_values` problem turned out to be systemic (every chapkit model with
+declared tunables was running on defaults when configured through chap-core), so it was
+fixed upstream rather than per model: chapkit 2.1.0 hoists the nested payload in
+`BaseConfig` (dhis2-chap/chapkit#110) and resolves the forecast horizon per request from
+chap-core's `run_info`, the future frame, or the stored config (dhis2-chap/chapkit#111).
+Tracked as CLIM-1122.
+
+Changes here:
+
+- `pyproject.toml`: `chapkit>=2.1.0,<3`; `uv lock --refresh-package chapkit` (a plain
+  `uv lock` used a stale index and claimed only 2.0.1 existed minutes after the release).
+- `main.py`: the `_hoist_user_option_values` validator and its `cast` /
+  `model_validator` imports removed. `test_config_hoists_user_option_values` still passes
+  unchanged, now exercising chapkit's own behaviour.
+- Nothing else. `config.yml` now carries the per-request horizon in `prediction_periods`;
+  the script ignores it, as before (the horizon comes from the future rows).
+
+Commit `build(deps): upgrade to chapkit 2.1.0 and drop the local user_option_values hoist`.
+
 ## Verification results
 
 Run on macOS 27.0 arm64, against `uv run python main.py` on port 9090, at the tip of the
@@ -934,7 +959,7 @@ This is the check that failed before step 8 with
 1. **`prediction_periods` needs a default.** `BaseConfig` declares it with none and
    chap-core never sends it. Without `Field(default=...)` every chap-core config POST is a
    422.
-2. **Hoist `user_option_values`, or use `config_format="chap_core"` and know what it
+2. **(Fixed in chapkit 2.1.0, which hoists for you.) Hoist `user_option_values`, or use `config_format="chap_core"` and know what it
    does.** `extra="allow"` means a nested dict is accepted silently, the tunables keep
    their defaults, and the run succeeds with the wrong numbers. This is the failure mode
    that a smoke test will not catch and a parity test will.
