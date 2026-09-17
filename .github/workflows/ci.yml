@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install deps (incl. dev)
+        run: uv sync --all-groups
+      - name: Lint
+        run: make check
+      # Includes the golden parity tests. PARITY_RTOL is the escape hatch if a
+      # Linux runner's BLAS differs from the machine the goldens were produced on;
+      # shape, columns and row order are always compared exactly.
+      - name: Test (in-process FastAPI TestClient, incl. golden parity)
+        run: make test
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: chap-mstl-arima:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start container
+        run: docker run -d --name chapkit-ci -p 8000:8000 chap-mstl-arima:ci
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:8000/health | grep -q '"healthy"'; then
+              echo "Service healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Service did not become healthy within 90s"
+          exit 1
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install deps (incl. dev)
+        run: uv sync --all-groups
+      - name: Run chapkit test against container
+        run: uv run chapkit test --url http://localhost:8000 --timeout 300 --verbose
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs chapkit-ci
+      - name: Stop container
+        if: always()
+        run: docker rm -f chapkit-ci

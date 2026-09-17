@@ -1,0 +1,53 @@
+services:
+  # The service name doubles as the inter-container DNS hostname chap-core uses to
+  # reach this service after registration, so it has to be unique within the compose
+  # stack. Using the project slug avoids collisions when this file is used as a
+  # chap-core overlay alongside other model services.
+  chap_mstl_arima:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Bakes the commit into the image: GIT_REVISION=$(git rev-parse HEAD) docker compose up --build
+      args:
+        GIT_REVISION: ${GIT_REVISION:-}
+    ports:
+      # "host:container". 9090 on the host matches `python main.py` locally and avoids
+      # the usual busy ports; when overlaying onto chap-core alongside other models,
+      # pick a unique host port per overlay. The container port stays 8000.
+      - "9090:8000"
+    # Runtime hardening, mirroring chap-core's compose.yml: unprivileged user, read-only
+    # root filesystem, writable only at /work/data (SQLite) and /tmp (ML workspaces plus
+    # the numba JIT cache, a tmpfs in RAM).
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: chapkit:chapkit
+    volumes:
+      - ck_chap_mstl_arima_data:/work/data
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 2000000000
+    environment:
+      LOG_FORMAT: json
+      LOG_LEVEL: INFO
+      WORKERS: 1
+      # CHAPKIT_TEMP_DIR: /tmp  # Override the temp directory used for ML workspaces
+      # When integrating with chap-core, register this service on startup:
+      # SERVICEKIT_ORCHESTRATOR_URL: http://chap:8000/v2/services/$$register
+      # SERVICEKIT_REGISTRATION_KEY: ${SERVICEKIT_REGISTRATION_KEY:-}
+    restart: unless-stopped
+    # No `networks:` directive on purpose. Compose puts every service on the project's
+    # default network, so standalone `docker compose up` just works, and overlay use
+    # (`docker compose -f compose.yml -f compose.chap_mstl_arima.yml up`) automatically
+    # joins the same default network as chap, redis and postgres.
+    # When integrating with chap-core, wait for it to be healthy first:
+    # depends_on:
+    #   chap:
+    #     condition: service_healthy
+
+volumes:
+  ck_chap_mstl_arima_data:
