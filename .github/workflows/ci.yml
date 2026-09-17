@@ -24,9 +24,9 @@ jobs:
         run: uv sync --all-groups
       - name: Lint
         run: make check
-      # Includes the golden parity tests. PARITY_RTOL is the escape hatch if a
-      # Linux runner's BLAS differs from the machine the goldens were produced on;
-      # shape, columns and row order are always compared exactly.
+      # Includes the golden parity tests. PARITY_RTOL / PARITY_ATOL (default 1e-6)
+      # absorb last-ulp BLAS / libm differences between this runner and the machine
+      # the goldens were produced on; shape, columns and row order are always exact.
       - name: Test (in-process FastAPI TestClient, incl. golden parity)
         run: make test
 

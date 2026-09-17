@@ -29,9 +29,13 @@ from tests.helpers import (
 )
 
 # Exact equality holds on the machine the fixtures were produced on. The
-# tolerance exists so a Linux CI runner with a different BLAS cannot fail on a
-# last-ulp difference; shape, columns and row order are never tolerant.
+# tolerances exist so a Linux CI runner with a different BLAS / libm cannot fail
+# on a last-ulp difference. The absolute tolerance matters for samples that are
+# a few thousandths of a case: expm1 of a tiny log-scale draw differs by ~5e-8
+# across platforms, which is ~1e-5 relative but physically nothing. Shape,
+# columns and row order are never tolerant.
 PARITY_RTOL = float(os.getenv("PARITY_RTOL", "1e-6"))
+PARITY_ATOL = float(os.getenv("PARITY_ATOL", "1e-6"))
 
 KINDS = {
     "monthly": (EXAMPLE_DATA / "monthly", GOLDEN_DIR / "lao_monthly_predictions.csv"),
@@ -188,7 +192,7 @@ def _assert_matches_golden(predictions: pd.DataFrame, golden: pd.DataFrame, labe
     exact = int(np.count_nonzero(got == want))
     print(f"\n{label}: {exact} / {got.size} cells exactly equal to the legacy golden output")
 
-    np.testing.assert_allclose(got, want, rtol=PARITY_RTOL, atol=0)
+    np.testing.assert_allclose(got, want, rtol=PARITY_RTOL, atol=PARITY_ATOL)
 
 
 def _run_golden(client: TestClient, golden_options: dict, kind: str) -> None:
