@@ -19,8 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_DATA = REPO_ROOT / "example_data"
 GOLDEN_DIR = REPO_ROOT / "tests" / "golden"
 
-# The first job in a session pays numba's JIT compilation on top of one
-# AutoARIMA fit per location, so this is generous on purpose.
+# A single job fits one MSTL + AutoARIMA per location in a subprocess, after
+# chapkit has copied the project into a fresh workspace. Generous on purpose:
+# a slow CI runner should time out on the assertion, not on the clock.
 JOB_TIMEOUT_SECONDS = 600
 
 

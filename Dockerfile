@@ -33,8 +33,9 @@ COPY chap_mstl_arima/ ./chap_mstl_arima/
 # The service writes in exactly two places: /work/data (SQLite database, a named volume
 # in compose.yml) and /tmp (ML workspaces, a tmpfs in compose.yml). Everything else stays
 # read-only, which is what compose.yml's `read_only: true` enforces. NUMBA_CACHE_DIR is
-# the model-specific one: statsforecast's numba kernels want to write a JIT cache next to
-# the installed package, which fails on a read-only root filesystem.
+# there defensively: numba-backed forecasting stacks write a JIT cache next to the
+# installed package, which fails on a read-only root filesystem. statsforecast 2.1.1 does
+# not pull numba in, but earlier releases did and a transitive dependency may again.
 RUN mkdir -p /work/data && chown -R chapkit:chapkit /work/data
 ENV HOME=/tmp \
     MPLCONFIGDIR=/tmp \
