@@ -135,14 +135,17 @@ chap eval \
   --backtest-params.n-periods 3
 ```
 
-> **Note.** chap-core 2.3.0 cannot read a service that advertises
-> `period_type: "any"` - its REST client enum only accepts `weekly` and `monthly`, and
-> `chap eval` fails while validating `/api/v1/info`. This service advertises `any` because
+> **Note.** Released chap-core (2.3.0, and the `ghcr.io/dhis2-chap/chap-core:latest`
+> image once that tag tracks releases) cannot read a service that advertises
+> `period_type: "any"`: its REST client enum only accepts `weekly` and `monthly`, so
+> `chap eval` fails while validating `/api/v1/info` and `$register` returns 422. chap-core
+> `master` (the `:master` image, 2.4.0.dev0 and later) accepts `any`; registration and a
+> full `chap eval` backtest were verified against it. This service advertises `any` because
 > it genuinely handles both, matching the old `MLproject`'s `supported_period_type: any`
-> and chapkit's own `PeriodType.any`. Until chap-core's client catches up, evaluate against
-> a build with `period_type=PeriodType.monthly` in `main.py`, or use a newer chap-core.
-> Everything else in the chap-core path (config POST, `$train`, job polling, `$predict`,
-> artifact download, `.nc` export) is verified working.
+> and chapkit's `PeriodType.any`. To run against a released chap-core before its next
+> release, set `period_type=PeriodType.monthly` in `main.py`. Everything else in the
+> chap-core path (config POST, `$train`, job polling, `$predict`, artifact download,
+> `.nc` export) is verified working.
 
 ## Docker
 
