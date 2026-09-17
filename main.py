@@ -8,12 +8,13 @@ entry points the MLproject declared, now reachable as
 
 import os
 from pathlib import Path
+from typing import cast
 
 from chapkit import BaseConfig
 from chapkit.api import AssessedStatus, MLServiceBuilder, MLServiceInfo, ModelMetadata, PeriodType
 from chapkit.artifact import ArtifactHierarchy
 from chapkit.ml import ShellModelRunner
-from pydantic import Field, model_validator
+from pydantic import Field, HttpUrl, model_validator
 
 
 class MSTLArimaConfig(BaseConfig):
@@ -73,12 +74,16 @@ class MSTLArimaConfig(BaseConfig):
         Flat keys win over nested ones, so `chapkit test` (which posts flat
         fields) and the chap-core shape both behave identically.
         """
-        if isinstance(data, dict) and isinstance(data.get("user_option_values"), dict):
-            hoisted = {k: v for k, v in data.items() if k != "user_option_values"}
-            for key, value in data["user_option_values"].items():
-                hoisted.setdefault(key, value)
-            return hoisted
-        return data
+        if not isinstance(data, dict):
+            return data
+        payload = cast(dict[str, object], data)
+        nested = payload.get("user_option_values")
+        if not isinstance(nested, dict):
+            return payload
+        hoisted: dict[str, object] = {k: v for k, v in payload.items() if k != "user_option_values"}
+        for key, value in cast(dict[str, object], nested).items():
+            hoisted.setdefault(key, value)
+        return hoisted
 
 
 # The commands below are the MLproject entry points verbatim, with the MLproject
@@ -119,7 +124,7 @@ info = MLServiceInfo(
         author_assessed_status=AssessedStatus.yellow,
         contact_email="knutdrand@gmail.com",
         organization="HISP Centre, University of Oslo",
-        organization_logo_url="https://landportal.org/sites/default/files/2024-03/university_of_oslo_logo.png",
+        organization_logo_url=HttpUrl("https://landportal.org/sites/default/files/2024-03/university_of_oslo_logo.png"),
         citation_info=(
             'Climate Health Analytics Platform. 2026. "MSTL + AutoARIMA Model". HISP Centre, University of Oslo.'
         ),
