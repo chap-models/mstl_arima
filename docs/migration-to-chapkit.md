@@ -365,3 +365,116 @@ it is an MLproject field and dropping it would lose information. The MLproject t
 
 Exact, not approximate. As expected: the service runs the same code, in the same
 interpreter, on the same inputs, in the same order.
+
+---
+
+## Step 4 - `test: in-process service tests with golden parity`
+
+### Layout
+
+```
+tests/
+├── __init__.py          # makes conftest import exactly once, as tests.conftest
+├── conftest.py          # DATABASE_URL + session TestClient + golden_options
+├── helpers.py           # df_payload / wait_for_job / create_config / train / predict
+├── test_service.py      # 9 tests
+└── golden/              # from step 2
+```
+
+`tests/conftest.py` sets `DATABASE_URL` to a temp SQLite **file** before
+`from main import app`, because `main.py` reads the env var at module import time and
+because an in-memory database would not be shared between the request thread and the
+background job worker:
+
+```python
+_DB_DIR = Path(tempfile.mkdtemp(prefix="chap_mstl_arima_test_"))
+os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{_DB_DIR}/test.db")
+
+from fastapi.testclient import TestClient  # noqa: E402
+from main import app  # noqa: E402
+```
+
+The `# noqa: E402` comments are load-bearing: ruff's `E402` (module level import not at top
+of file) would otherwise fail CI, and moving the imports up would break the test suite.
+
+`tests/__init__.py` exists so pytest imports `conftest.py` once, as `tests.conftest`.
+Without it, `from tests.helpers import ...` in a test module creates a *second* copy of the
+package's modules under different names. Shared constants live in `helpers.py` rather than
+`conftest.py` for the same reason.
+
+The tests drive the ASGI app in-process through `TestClient`, but the jobs still fork real
+`python -m chap_mstl_arima` subprocesses into real temp workspaces. Nothing about the
+runner path is mocked.
+
+### The 9 tests
+
+| Test | What it pins down |
+|---|---|
+| `test_health` | service boots, database and registration subsystems healthy |
+| `test_info` | `id`, `display_name`, `period_type == "any"`, `required_covariates == []`, `allow_free_additional_continuous_covariates is False`, author metadata |
+| `test_config_schema_defaults` | all 9 config fields present in `GET /api/v1/configs/$schema` with the MLproject defaults and a non-empty description; `required` is empty |
+| `test_config_hoists_user_option_values` | chap-core-shaped POST -> `n_samples == 7`, `prediction_periods == 3`, no leftover `user_option_values` extra field |
+| `test_config_flat_fields_win_over_nested` | unit test on the class: flat only, nested only, and both (flat wins) |
+| `test_monthly_reproduces_legacy_golden` | exact column list, exact `(time_period, location)` order, `assert_allclose(rtol=PARITY_RTOL, atol=0)` over 5400 cells |
+| `test_weekly_reproduces_legacy_golden` | same over 900 cells |
+| `test_unseen_location_fallback` | a future row for a location absent from training still returns finite, non-negative samples (the `historic mean` fallback in `model.py`) |
+| `test_future_row_order_preserved` | future frame shuffled with `random_state=1234`; output row order equals input row order |
+
+`test_future_row_order_preserved` is the one that looks like padding and is not. The model
+draws `n_samples` values per future row in iteration order from a single seeded generator,
+and chap-core matches predictions to requests positionally. A runner (or a future
+refactor) that sorted the future frame would produce plausible-looking, wrong numbers
+without failing anything else.
+
+`JOB_TIMEOUT_SECONDS = 600`, generous because the first job in a session pays numba's JIT
+compilation on top of 18 AutoARIMA fits.
+
+### Results (macOS arm64)
+
+```
+9 passed in 17.75s
+
+5.21s  test_monthly_reproduces_legacy_golden
+3.66s  test_unseen_location_fallback
+3.63s  test_future_row_order_preserved
+3.61s  test_weekly_reproduces_legacy_golden
+1.56s  setup (the shared monthly training artifact)
+```
+
+```
+monthly: 5400 / 5400 cells exactly equal to the legacy golden output
+weekly:   900 /  900 cells exactly equal to the legacy golden output
+```
+
+### Gotcha found in this step: `ruff format` rewrote the frozen numeric core
+
+`uv run ruff format .` (ruff 0.16.8) reformatted `chap_mstl_arima/model.py` - reordering
+`from statsforecast.models import AutoARIMA, MSTL` to `import MSTL, AutoARIMA` and joining
+three wrapped expressions. All cosmetic, all semantically identical, and all fatal to the
+one property this conversion sells: `git diff <base> -- chap_mstl_arima/model.py` must be
+empty, so that a reviewer can verify by inspection that the numbers cannot have moved.
+
+Same run also rewrote Python code blocks **inside Markdown files** - ruff >= 0.16 formats
+fenced Python in `.md`, which silently reflowed documentation snippets that were wrapped
+for reading.
+
+Fix, in `pyproject.toml`:
+
+```toml
+[tool.ruff]
+extend-exclude = [
+    "chap_mstl_arima/config.py",
+    "chap_mstl_arima/io_utils.py",
+    "chap_mstl_arima/model.py",
+    "*.md",
+]
+```
+
+and `git checkout <base> -- chap_mstl_arima/{config,io_utils,model}.py` to undo the damage.
+Worth doing **before** the first `ruff format` on any migration that promises an untouched
+model core.
+
+`chap_mstl_arima/cli.py` is deliberately *not* excluded, so it did get reformatted: one
+`or` chain in `_load_config` was joined onto a single line. Semantically identical, and
+the file is glue rather than numerics - but it means "moved verbatim" is now "moved
+verbatim, then formatted".
