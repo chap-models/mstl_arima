@@ -544,3 +544,161 @@ The Docker daemon was not running on the machine this conversion was done on
 (`docker info` failed). Nothing in this step was executed locally: the image has never
 been built here. `ci.yml`'s `docker-build` job is what actually exercises it. That is a
 real gap and it is called out in the PR rather than papered over.
+
+---
+
+## Step 6 - `docs: describe chapkit service usage and migration`
+
+- `README.md` rewritten: what the model is, `uv sync` / `uv run python main.py` quickstart,
+  a runnable curl sequence (config -> `$train` -> poll -> `$predict` -> poll -> `$download`),
+  `chapkit test` for both period types, `chap eval`, docker, the 9-field config table, the
+  parity section, and the legacy CLI. The curl sequence in the README was executed verbatim
+  against a running service before being committed; it is not pseudo-code.
+- `docs/mstl_arima.md`: the theory document kept its content. Two references were
+  repointed - `configurations/auto_arima_best.yaml` (a file that no longer exists) became
+  "`arima_stepwise: false` in the service config", and a paragraph was added mapping the
+  knobs it discusses to the service config schema.
+- This file finished.
+
+---
+
+## Step 7 - `chore: remove MLproject and legacy entry points`
+
+`git rm MLproject configurations/mstl_arima.yaml`. The root `main.py` was already replaced
+in step 3. Everything the two files carried now lives in the service:
+
+| MLproject | Now |
+|---|---|
+| `meta_data.*` | `MLServiceInfo` / `ModelMetadata` in `main.py` |
+| `user_options.*` | `MSTLArimaConfig` fields, with the MLproject titles as `Field(description=...)` |
+| `supported_period_type` | `period_type=PeriodType.any` |
+| `required_covariates`, `allow_free_additional_continuous_covariates` | same names on `MLServiceInfo` |
+| `target: disease_cases` | implicit; chapkit has no per-service target field |
+| `uv_env: pyproject.toml` | the Dockerfile's `uv sync --frozen` |
+| `entry_points.train.command` | `ShellModelRunner(train_command=...)` |
+| `entry_points.predict.command` | `ShellModelRunner(predict_command=...)` |
+| `configurations/mstl_arima.yaml` | a `POST /api/v1/configs` body (see the README) |
+
+---
+
+## Verification results
+
+Run on macOS 27.0 arm64, against `uv run python main.py` on port 9090, at the tip of the
+branch.
+
+### Lint
+
+```
+uv run ruff format --check .   ->  9 files already formatted
+uv run ruff check .            ->  All checks passed!
+```
+
+### Tests
+
+```
+uv run pytest -v   ->  9 passed in 17.75s
+
+5.21s  test_monthly_reproduces_legacy_golden
+3.66s  test_unseen_location_fallback
+3.63s  test_future_row_order_preserved
+3.61s  test_weekly_reproduces_legacy_golden
+1.56s  setup (shared monthly training artifact)
+0.01s  everything else
+
+monthly: 5400 / 5400 cells exactly equal to the legacy golden output
+weekly:   900 /  900 cells exactly equal to the legacy golden output
+```
+
+### `chapkit test`
+
+| Invocation | Result | Elapsed |
+|---|---|---|
+| `chapkit test --url http://localhost:9090 --timeout 300` | ALL TESTS PASSED (1 config, 1 training, 1 prediction, 2 validations) | 5.40 s |
+| `chapkit test --url http://localhost:9090 --period-type weekly --rows 520 --predict-rows 300 --timeout 300` | ALL TESTS PASSED | 6.45 s |
+
+The weekly run needs the larger row counts: at the default `--rows 250` a weekly panel has
+under a year of history, which is shorter than the 52-period season length.
+
+### `scripts/parity.py`
+
+Reference = the legacy CLI re-run live:
+
+| kind | rows | sample cols | exactly equal cells | max abs diff | max rel diff | result |
+|---|---|---|---|---|---|---|
+| monthly | 216 | 25 | 5400 / 5400 (100.00 %) | 0.000e+00 | 0.000e+00 | PASS |
+| weekly | 36 | 25 | 900 / 900 (100.00 %) | 0.000e+00 | 0.000e+00 | PASS |
+
+Reference = the committed pre-conversion golden fixture (`--golden`):
+
+| kind | rows | sample cols | exactly equal cells | max abs diff | max rel diff | result |
+|---|---|---|---|---|---|---|
+| monthly | 216 | 25 | 5400 / 5400 (100.00 %) | 0.000e+00 | 0.000e+00 | PASS |
+| weekly | 36 | 25 | 900 / 900 (100.00 %) | 0.000e+00 | 0.000e+00 | PASS |
+
+### `chap eval` (chap-core 2.3.0)
+
+**Blocked by chap-core, not by this service.** With `period_type=PeriodType.any`:
+
+```
+pydantic_core._pydantic_core.ValidationError: 1 validation error for MLServiceInfo
+period_type
+  Input should be 'weekly' or 'monthly' [type=enum, input_value='any', input_type=str]
+```
+
+`chap_core/rest_api/services/schemas.py` declares
+`class PeriodType(StrEnum): weekly; monthly` - no `any` - and
+`chapkit_rest_api_wrapper.info()` validates `/api/v1/info` against it, so `chap eval`
+aborts before doing any work. chap-core's *other* period-type enum
+(`chap_core/model_spec.py`) does have `any`, and chapkit 2.0.1 offers `PeriodType.any`
+with the comment "chap-core then skips its period-type check", so this is a gap in
+chap-core 2.3.0's chapkit client rather than a wrong declaration here. chap-core 2.3.0 is
+the newest release on PyPI as of this writing.
+
+To confirm nothing else in the chap-core path is broken, the service was temporarily
+rebuilt with `period_type=PeriodType.monthly` and the same command re-run:
+
+```
+chap eval --model-name http://localhost:9090 \
+  --dataset-csv example_data/monthly/training_data.csv \
+  --output-file <scratch>/eval.nc --run-config.is-chapkit-model \
+  --backtest-params.n-splits 2 --backtest-params.n-periods 3
+```
+
+That **succeeded end to end** (`POST /api/v1/configs` 201, two `$train` + `$predict`
+rounds, artifact downloads, 193 KB `eval.nc` written). The change was reverted; the branch
+ships `PeriodType.any`.
+
+### Docker
+
+Not run. The Docker daemon was unavailable on the conversion machine (`docker info`
+failed). The image has never been built. `ci.yml`'s `docker-build` job covers it.
+
+---
+
+## Gotchas worth carrying to the next migration
+
+1. **`prediction_periods` needs a default.** `BaseConfig` declares it with none and
+   chap-core never sends it. Without `Field(default=...)` every chap-core config POST is a
+   422.
+2. **Hoist `user_option_values`, or use `config_format="chap_core"` and know what it
+   does.** `extra="allow"` means a nested dict is accepted silently, the tunables keep
+   their defaults, and the run succeeds with the wrong numbers. This is the failure mode
+   that a smoke test will not catch and a parity test will.
+3. **Capture the baseline before you write a line of service code**, from a worktree of
+   the base commit, using the *new* virtualenv, and assert `__file__` points into the
+   worktree.
+4. **Prove the baseline is deterministic** (run predict twice and `cmp`) before deciding
+   what tolerance the parity test should use. If it is deterministic, demand exact
+   equality locally and keep a `PARITY_RTOL` env escape hatch for CI.
+5. **`pd.read_csv(..., float_precision="round_trip")`** on both sides of any float
+   comparison.
+6. **Exclude the frozen numeric core from `ruff`** *before* the first `ruff format .`.
+   ruff >= 0.16 also formats Python code blocks inside Markdown.
+7. **Point `NUMBA_CACHE_DIR` at `/tmp`** for any numba-backed model, or the first job in a
+   read-only container fails.
+8. **Test both period types** when the model declares `supported_period_type: any`, and
+   remember `chapkit test --period-type weekly` needs `--rows 520 --predict-rows 300`.
+9. **Row order is part of the contract** for sampling models. Write the shuffled-future
+   test.
+10. **chap-core 2.3.0 cannot consume `period_type: "any"`** from a chapkit service. Check
+    this before promising `any` to a deployment.
