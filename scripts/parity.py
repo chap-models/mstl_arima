@@ -144,7 +144,7 @@ def service_predictions(url: str, kind: str, config_path: Path, timeout: float) 
 
     with httpx.Client(base_url=url, timeout=60.0) as client:
         # chap-core posts configs in this shape: a name plus a user_option_values
-        # dict. MSTLArimaConfig hoists those keys, so this must behave exactly like
+        # dict. chapkit 2.1.0 hoists those keys onto the config, so this must behave exactly like
         # posting them flat.
         config = client.post(
             "/api/v1/configs",

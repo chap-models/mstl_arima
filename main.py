@@ -8,13 +8,12 @@ entry points the MLproject declared, now reachable as
 
 import os
 from pathlib import Path
-from typing import cast
 
 from chapkit import BaseConfig
 from chapkit.api import AssessedStatus, MLServiceBuilder, MLServiceInfo, ModelMetadata, PeriodType
 from chapkit.artifact import ArtifactHierarchy
 from chapkit.ml import ShellModelRunner
-from pydantic import Field, HttpUrl, model_validator
+from pydantic import Field, HttpUrl
 
 
 class MSTLArimaConfig(BaseConfig):
@@ -58,33 +57,6 @@ class MSTLArimaConfig(BaseConfig):
         default=False,
         description="Treat missing (NaN) target values as 0 reported cases instead of dropping them",
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _hoist_user_option_values(cls, data: object) -> object:
-        """Accept chap-core's nested `user_option_values` payload as flat fields.
-
-        chap-core posts a config as `{"name": ..., "user_option_values": {...}}`.
-        `BaseConfig` sets `extra="allow"`, so without this hook the dict would be
-        stored verbatim as an unknown extra field, every declared tunable would
-        keep its default, and `dump_config_yaml(..., "chap_core")` would then emit
-        `user_option_values: {user_option_values: {...}, n_samples: 100, ...}` -
-        the script would read the defaults and silently ignore what was requested.
-
-        Flat keys win over nested ones, so `chapkit test` (which posts flat
-        fields) and the chap-core shape both behave identically.
-        """
-        if not isinstance(data, dict):
-            return data
-        payload = cast(dict[str, object], data)
-        nested = payload.get("user_option_values")
-        if not isinstance(nested, dict):
-            return payload
-        hoisted: dict[str, object] = {k: v for k, v in payload.items() if k != "user_option_values"}
-        for key, value in cast(dict[str, object], nested).items():
-            if key not in hoisted:
-                hoisted[key] = value
-        return hoisted
 
 
 # The commands below are the MLproject entry points verbatim, with the MLproject

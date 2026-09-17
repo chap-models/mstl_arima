@@ -90,7 +90,7 @@ left at their `ModelConfig` defaults.
 | numpy | 2.5.3 |
 | pandas | 2.3.3 |
 | scipy | 1.18.1 |
-| chapkit | 2.0.1 |
+| chapkit | 2.1.0 (2.0.1 when first produced; the goldens come from the legacy CLI and do not depend on chapkit) |
 
 ### Note on the statsforecast 2.0.1 -> 2.1.1 bump
 
