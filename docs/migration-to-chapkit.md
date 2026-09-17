@@ -221,3 +221,147 @@ Two details worth stealing for other migrations:
 - Relative difference is only defined where the reference is non-zero. Cells where the
   reference is exactly 0 (the model clips samples at zero, so there are some) count as
   `inf` relative difference if the candidate is non-zero, and 0 otherwise.
+
+---
+
+## Step 3 - `feat: expose MSTL + AutoARIMA as a chapkit service`
+
+### File moves
+
+| From | To | Change |
+|---|---|---|
+| `main.py` (cyclopts CLI) | `chap_mstl_arima/cli.py` | module docstring rewritten; `if __name__ == "__main__":` body extracted into `main()`. Nothing else. |
+| - | `chap_mstl_arima/__main__.py` | 3 lines, calls `cli.main()`. |
+| - | `main.py` | the chapkit service. |
+
+`chap_mstl_arima/model.py`, `io_utils.py` and `config.py` are **byte-identical** to
+`20ef2f6`. That is checkable:
+
+```
+git diff 20ef2f6 -- chap_mstl_arima/model.py chap_mstl_arima/io_utils.py chap_mstl_arima/config.py
+# (empty)
+```
+
+`python -m` rather than a console script: `ShellModelRunner` copies the project into a
+scratch workspace and runs the command there with that workspace as `cwd`. `cwd` is on
+`sys.path`, so `python -m chap_mstl_arima` resolves the copied package without the
+project having to be installed into the workspace. `python` itself resolves to the
+virtualenv interpreter both locally (`uv run python main.py` puts `.venv/bin` on `PATH`)
+and in the image (`/app/.venv/bin` is on `PATH` in `ghcr.io/dhis2-chap/chapkit-py`).
+
+Verified immediately after the move, before writing any test:
+
+```
+uv run python -m chap_mstl_arima train    example_data/monthly/training_data.csv ... 
+uv run python -m chap_mstl_arima predict  ...
+cmp <out> tests/golden/lao_monthly_predictions.csv   # byte-identical
+```
+
+### The runner
+
+```python
+runner: ShellModelRunner[MSTLArimaConfig] = ShellModelRunner(
+    train_command="python -m chap_mstl_arima train {data_file} model.json config.yml",
+    predict_command=(
+        "python -m chap_mstl_arima predict model.json {historic_file} {future_file} "
+        "{output_file} config.yml"
+    ),
+    config_format="chap_core",
+)
+```
+
+`{data_file}` -> `data.csv`, `{historic_file}` -> `historic.csv`, `{future_file}` ->
+`future.csv`, `{output_file}` -> `predictions.csv`, all workspace-relative. `model.json`
+and `config.yml` are literal filenames: chapkit always writes `config.yml` into the
+workspace, and the whole train workspace (including the `model.json` the train command
+wrote) is zipped, stored as the `ml_training_workspace` artifact and restored into the
+predict workspace before the predict command runs.
+
+`config_format="chap_core"` is the reason `cli.py` needed no edits. It makes chapkit emit
+
+```yaml
+prediction_periods: 3
+additional_continuous_covariates: []
+user_option_values:
+  n_samples: 25
+  random_seed: 42
+  ...
+```
+
+and the legacy `_load_config` already does
+`raw.get("user_option_values") or raw.get("user_options") or raw`. The default
+(`config_format="flat"`) would have written every tunable at the top level, which
+`_load_config` would *also* have accepted via its `or raw` fallback - but then
+`prediction_periods` and `additional_continuous_covariates` would have been fed to
+`ModelConfig.from_user_options` as unknown keys (harmless, they are filtered) while
+diverging from the shape every other chap-models script expects. `chap_core` is the right
+default for a migration.
+
+### The `user_option_values` hoisting validator - the single most important gotcha
+
+chap-core creates a config with
+
+```json
+{"name": "my-run", "user_option_values": {"n_samples": 25}, "additional_continuous_covariates": []}
+```
+
+`BaseConfig` has `model_config = {"extra": "allow"}`. Without a hook, `user_option_values`
+is therefore accepted as an unknown extra field and stored verbatim; every declared
+tunable keeps its default; and `dump_config_yaml(config, "chap_core")` - which nests
+*everything except* `prediction_periods` and `additional_continuous_covariates` under
+`user_option_values` - emits
+
+```yaml
+user_option_values:
+  user_option_values: {n_samples: 25}   # <- the request, buried
+  n_samples: 100                        # <- the default, which is what the script reads
+```
+
+The service answers 200, the job succeeds, the numbers are quietly wrong. Hence:
+
+```python
+@model_validator(mode="before")
+@classmethod
+def _hoist_user_option_values(cls, data: object) -> object:
+    if isinstance(data, dict) and isinstance(data.get("user_option_values"), dict):
+        hoisted = {k: v for k, v in data.items() if k != "user_option_values"}
+        for key, value in data["user_option_values"].items():
+            hoisted.setdefault(key, value)
+        return hoisted
+    return data
+```
+
+`setdefault` means flat keys win over nested ones, so `chapkit test` (which posts flat
+fields) and chap-core (which posts nested ones) both land on the same object. Verified:
+
+```
+MSTLArimaConfig.model_validate({"name": "x", "user_option_values": {"n_samples": 7}}).n_samples  == 7
+MSTLArimaConfig.model_validate({"n_samples": 3, "user_option_values": {"n_samples": 7}}).n_samples == 3
+dump_config_yaml(cfg, "chap_core")  ->  user_option_values.n_samples: 7, no nesting
+```
+
+The second required default is `prediction_periods`. `BaseConfig` declares it with **no
+default** (`prediction_periods: int`), and chap-core never sends it - it carries the
+horizon in the future frame instead. Without `Field(default=3, ...)` every chap-core
+config POST is a 422.
+
+### Service info
+
+Straight translation of the MLproject `meta_data` block, plus the contract fields. The
+only judgement calls: `min_prediction_periods=1` (the model cannot forecast zero periods
+usefully) and `max_prediction_periods=104` (two years of weekly periods; beyond that the
+seasonal extrapolation is just repeating the same cycle). `author_note` from the MLproject
+is carried over into `ModelMetadata.author_note` even though the plan did not list it -
+it is an MLproject field and dropping it would lose information. The MLproject title for
+`arima_approximation` contained a Unicode em dash; it was replaced with an ASCII hyphen.
+
+### Verified at the end of this step (service running on :9090)
+
+| Comparison | Result |
+|---|---|
+| golden monthly fixture vs service | 5400 / 5400 cells exactly equal, max abs diff 0.000e+00 |
+| golden weekly fixture vs service | 900 / 900 cells exactly equal, max abs diff 0.000e+00 |
+| live legacy CLI vs service (monthly) | 5400 / 5400 cells exactly equal |
+
+Exact, not approximate. As expected: the service runs the same code, in the same
+interpreter, on the same inputs, in the same order.
