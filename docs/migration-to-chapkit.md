@@ -102,3 +102,122 @@ uv run python -c "from statsforecast import StatsForecast"
 - `cyclopts` resolves to **4.x** even though the floor is `>=2.9`. The legacy CLI only uses
   `cyclopts.App()` and `@app.command()`, both unchanged in 4.x. Verified by running the
   legacy CLI in step 2 with this venv.
+
+---
+
+## Step 2 - `test: add example data and legacy golden predictions`
+
+This step happens **before** any service code exists. That ordering is deliberate: the
+baseline has to be captured with the old code, or there is nothing trustworthy to compare
+against later.
+
+### Example data
+
+- `example_data/monthly/{training_data,historic_data,future_data}.csv` copied verbatim
+  from `chapkit_simple_multistep_model/example_data/` - 18 Lao admin1 locations, monthly
+  `YYYY-MM` periods, 2736 / 2520 / 216 rows. `future_data.csv` has no `disease_cases`
+  column, which is how chap-core posts the future frame.
+- `example_data/weekly/{training_data,historic_data,future_data}.csv` derived from
+  `auto_regressive_weekly_v2/input/trainData.csv` (3 Nicaraguan departments, 160 weekly
+  periods each, `YYYY-MM-DD/YYYY-MM-DD` period format). The last 12 periods per location
+  become `future_data.csv` with `disease_cases` dropped; the remaining 148 periods per
+  location are both `training_data.csv` and `historic_data.csv` (444 rows). Original row
+  order is preserved on both sides. The weekly data keeps 3 NaN `disease_cases` values,
+  which is useful: it exercises the NaN -> None JSON conversion and the model's dropna.
+
+Weekly data is not optional decoration. `supported_period_type: any` means the service
+claims to handle both, and the two code paths differ (`detect_frequency` -> `W-MON` vs
+`MS`, `season_length_weekly=52` vs `season_length_monthly=12`, and a different
+`period_to_timestamp` branch). A monthly-only parity check would leave half the model
+unverified.
+
+### Capturing the baseline
+
+The golden predictions must come from the **legacy** code but the **new** virtualenv.
+Mixing those up is the classic way to produce a meaningless parity check: run the old code
+with old libraries and the new code with new libraries, and any diff is unattributable.
+
+```
+git worktree add ../mstl_arima-baseline 20ef2f6       # untouched legacy code
+cd ../mstl_arima-baseline
+uv run --project ../mstl_arima python -c \
+  "import chap_mstl_arima; print(chap_mstl_arima.__file__)"
+# /Users/.../mstl_arima-baseline/chap_mstl_arima/__init__.py    <- correct
+```
+
+`uv run --project <dir>` resolves the environment from `<dir>` but keeps the current
+working directory, and `''` (cwd) is the first entry on `sys.path`, so the worktree's own
+`chap_mstl_arima` shadows the copy installed into the venv. This worked first try; the
+documented fallbacks (`PYTHONPATH=$WT`, or `uv run --project $REPO --directory $WT`) were
+not needed.
+
+Then, from the worktree:
+
+```
+uv run --project $REPO python main.py train \
+  $REPO/example_data/monthly/training_data.csv $SCRATCH/monthly_model.json \
+  $REPO/tests/golden/config.yaml                                   # 1.3 s
+
+uv run --project $REPO python main.py predict \
+  $SCRATCH/monthly_model.json \
+  $REPO/example_data/monthly/historic_data.csv \
+  $REPO/example_data/monthly/future_data.csv \
+  $SCRATCH/monthly_a.csv $REPO/tests/golden/config.yaml            # 3.0 s
+```
+
+and the same pair against `example_data/weekly/` (1.2 s train, 1.5 s predict).
+
+### Determinism proof
+
+`predict` was run a second time into `monthly_b.csv` from the same marker and config:
+
+```
+cmp $SCRATCH/monthly_a.csv $SCRATCH/monthly_b.csv   # byte-identical
+```
+
+This matters because it establishes that *exact* equality is the right bar. The model
+seeds `np.random.default_rng(cfg.random_seed)` inside `MSTLArimaModel.predict` and draws
+`n_samples` values per `future_df` row in iteration order, so the RNG stream is a pure
+function of (config, future row order). Any difference the service introduces - a
+reordered future frame, a dropped row, a config value that failed to reach the script -
+shows up immediately as a numeric diff rather than as a silent statistical wobble.
+
+### Files added
+
+- `tests/golden/config.yaml` - `user_option_values: {n_samples: 25, random_seed: 42}`.
+  25 samples instead of 100 keeps the fixtures at 93 KB / 18 KB while still covering 5400
+  and 900 float cells respectively.
+- `tests/golden/lao_monthly_predictions.csv` - 216 x 27 (`time_period`, `location`,
+  `sample_0` .. `sample_24`).
+- `tests/golden/nicaragua_weekly_predictions.csv` - 36 x 27.
+- `tests/golden/VERSIONS.md` - the reproduction recipe, the resolved versions, and the
+  tolerance policy.
+- `scripts/parity.py` - the parity harness (below).
+
+### `scripts/parity.py`
+
+Compares a **reference** against a **candidate**:
+
+- reference = the legacy CLI re-run live (`python -m chap_mstl_arima train|predict`, which
+  from step 3 onward is the same code the service shells out to), or, with `--golden`, the
+  committed fixture produced by the pre-conversion code;
+- candidate = a running chapkit service, driven over HTTP exactly the way chap-core drives
+  it: `POST /api/v1/configs` with the chap-core-shaped body
+  `{"name": ..., "data": {"user_option_values": {...}}}`, `POST /api/v1/ml/$train`, poll
+  `GET /api/v1/jobs/{job_id}`, `POST /api/v1/ml/$predict`, poll again, then
+  `GET /api/v1/artifacts/{artifact_id}/$download` using the `artifact_id` that came back in
+  the 202 response (both `$train` and `$predict` return `{"job_id", "artifact_id"}`).
+
+Comparison rules: column list, row count and `(time_period, location)` order are compared
+**exactly** and abort on any difference; the `sample_*` cells are compared numerically and
+the script prints a markdown table (kind, rows, sample columns, exactly-equal cells, max
+abs diff, max rel diff) and exits 1 when the max relative difference exceeds `--rtol`
+(default `PARITY_RTOL`, default `1e-6`).
+
+Two details worth stealing for other migrations:
+
+- `pd.read_csv(..., float_precision="round_trip")` on both sides. Without it pandas' fast
+  float parser can differ in the last ulp and manufacture a parity failure out of nothing.
+- Relative difference is only defined where the reference is non-zero. Cells where the
+  reference is exactly 0 (the model clips samples at zero, so there are some) count as
+  `inf` relative difference if the candidate is non-zero, and 0 otherwise.
