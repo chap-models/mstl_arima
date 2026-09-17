@@ -15,8 +15,8 @@ Usage:
     # compare against the committed legacy fixtures instead of re-running the CLI
     uv run python scripts/parity.py --url http://localhost:9090 --kind monthly --golden
 
-Exits 1 when the maximum relative difference exceeds --rtol (env PARITY_RTOL,
-default 1e-6), or when shape / column list / row order differ at all.
+Exits 1 when any cell violates |candidate - reference| <= atol + rtol * |reference|
+(--rtol / --atol, env PARITY_RTOL / PARITY_ATOL, both default 1e-6).
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ def service_predictions(url: str, kind: str, config_path: Path, timeout: float) 
 # --------------------------------------------------------------------------- #
 
 
-def compare(reference: pd.DataFrame, candidate: pd.DataFrame, kind: str, rtol: float) -> tuple[str, bool]:
+def compare(reference: pd.DataFrame, candidate: pd.DataFrame, kind: str, rtol: float, atol: float) -> tuple[str, bool]:
     """Compare two prediction frames and return a markdown row plus a pass flag."""
     if list(reference.columns) != list(candidate.columns):
         raise SystemExit(
@@ -222,7 +222,8 @@ def compare(reference: pd.DataFrame, candidate: pd.DataFrame, kind: str, rtol: f
     max_abs = float(diff.max()) if total else 0.0
     max_rel = float(rel.max()) if total else 0.0
 
-    ok = max_rel <= rtol
+    # Same rule as numpy.testing.assert_allclose: |cand - ref| <= atol + rtol * |ref|.
+    ok = bool(np.all(diff <= atol + rtol * denom))
     row = (
         f"| {kind} | {len(reference)} | {len(sample_cols)} | {exact} / {total} "
         f"({100.0 * exact / total:.2f} %) | {max_abs:.3e} | {max_rel:.3e} | {'PASS' if ok else 'FAIL'} |"
@@ -249,6 +250,12 @@ def main() -> int:
         default=float(os.getenv("PARITY_RTOL", "1e-6")),
         help="maximum tolerated relative difference (env PARITY_RTOL)",
     )
+    parser.add_argument(
+        "--atol",
+        type=float,
+        default=float(os.getenv("PARITY_ATOL", "1e-6")),
+        help="absolute tolerance added to the relative one, in cases (env PARITY_ATOL)",
+    )
     parser.add_argument("--timeout", type=float, default=600.0, help="per-job timeout in seconds")
     args = parser.parse_args()
 
@@ -261,11 +268,11 @@ def main() -> int:
 
     candidate = service_predictions(args.url, args.kind, args.config, args.timeout)
 
-    row, ok = compare(reference, candidate, args.kind, args.rtol)
+    row, ok = compare(reference, candidate, args.kind, args.rtol, args.atol)
 
     print(f"reference: {source}")
     print(f"candidate: chapkit service at {args.url}")
-    print(f"rtol: {args.rtol:g}")
+    print(f"rtol: {args.rtol:g}  atol: {args.atol:g}")
     print()
     print("| kind | rows | sample cols | exactly equal cells | max abs diff | max rel diff | result |")
     print("|---|---|---|---|---|---|---|")

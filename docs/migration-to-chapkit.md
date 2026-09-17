@@ -807,6 +807,19 @@ uv run ruff check .            ->  clean
 
 ---
 
+## Step 10: first CI run and the absolute tolerance
+
+The PR's `lint-and-test` job (ubuntu-latest, x86_64) failed
+`test_monthly_reproduces_legacy_golden`: 4 of 5400 cells mismatched at `rtol=1e-6, atol=0`.
+All four were samples of 0.003 to 0.024 cases with absolute differences of at most 5.2e-8
+(8.5e-6 relative). That is `expm1` of a near-zero log-scale draw evaluated with a different
+libm, not a porting difference; the weekly fixture and the other 5396 cells were exact.
+
+Fix: `tests/test_service.py` and `scripts/parity.py` now apply numpy's rule
+`|new - old| <= PARITY_ATOL + PARITY_RTOL * |old|` with both defaults at `1e-6` cases.
+Shape, column list and row order stay exact. Goldens unchanged. Commit
+`test(parity): add absolute tolerance for cross-platform ulp noise`.
+
 ## Verification results
 
 Run on macOS 27.0 arm64, against `uv run python main.py` on port 9090, at the tip of the
@@ -930,7 +943,9 @@ This is the check that failed before step 8 with
    worktree.
 4. **Prove the baseline is deterministic** (run predict twice and `cmp`) before deciding
    what tolerance the parity test should use. If it is deterministic, demand exact
-   equality locally and keep a `PARITY_RTOL` env escape hatch for CI.
+   equality locally and compare with `atol + rtol * |ref|` (both 1e-6) elsewhere: the
+   first CI run on ubuntu x86_64 differed in 4 of 5400 cells by 5e-8 absolute, all on
+   samples of a few thousandths of a case, which a relative-only check turns into 1e-5.
 5. **`pd.read_csv(..., float_precision="round_trip")`** on both sides of any float
    comparison.
 6. **Exclude the frozen numeric core from `ruff`** *before* the first `ruff format .`.

@@ -205,8 +205,11 @@ make parity   # both
 ```
 
 Comparison is exact on shape, column list and `(time_period, location)` row order;
-`sample_*` values are compared with `PARITY_RTOL` (default `1e-6`) so a CI runner with a
-different BLAS cannot fail on a last-ulp difference.
+`sample_*` values are compared with `|new - old| <= PARITY_ATOL + PARITY_RTOL * |old|`
+(both default `1e-6`) so a CI runner with a different BLAS or libm cannot fail on a
+last-ulp difference. The absolute part covers samples of a few thousandths of a case,
+where a 5e-8 platform difference is a 1e-5 relative one. On the machine the goldens were
+produced on every cell is exactly equal.
 
 ## Legacy CLI
 

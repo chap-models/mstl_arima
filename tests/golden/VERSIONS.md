@@ -105,8 +105,11 @@ the numbers.
 
 On this machine and this venv the chapkit service reproduces these numbers **exactly**
 (bit-for-bit). The tests nevertheless compare with
-`np.testing.assert_allclose(rtol=float(os.getenv("PARITY_RTOL", "1e-6")), atol=0)` so that
-a Linux CI runner with a different BLAS cannot fail on last-ulp differences. Shape, column
+`np.testing.assert_allclose(rtol=PARITY_RTOL, atol=PARITY_ATOL)` with both env-driven
+defaults at `1e-6`, so that a Linux CI runner with a different BLAS or libm cannot fail on
+last-ulp differences. The absolute tolerance was added after the first CI run on
+ubuntu x86_64 showed 4 of 5400 monthly cells off by at most 5.2e-8 (values around 0.003
+cases, 8.5e-6 relative). Shape, column
 list and `(time_period, location)` row order are always compared exactly - those must
 never drift.
 
