@@ -154,7 +154,7 @@ docker compose -f compose.ghcr.yml up  # prebuilt image from GHCR
 ```
 
 The container runs as the unprivileged `chapkit` user with a read-only root filesystem.
-Only `/work/data` (SQLite) and `/tmp` (ML workspaces and the numba JIT cache) are
+Only `/work/data` (SQLite) and `/tmp` (ML workspaces, plus any JIT or library cache) are
 writable.
 
 ## Configuration

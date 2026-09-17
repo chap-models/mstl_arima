@@ -83,14 +83,23 @@ left at their `ModelConfig` defaults.
 | Legacy commit | `20ef2f6` |
 | Platform | macOS 27.0 (Darwin), arm64 |
 | Python | 3.13.14 (CPython, clang 22.1.3) |
-| statsforecast | 2.0.1 |
+| statsforecast | 2.1.1 |
 | statsmodels | 0.15.0 |
 | utilsforecast | 0.2.15 |
-| numba | 0.67.0 |
+| numba | not installed (statsforecast 2.1.1 does not depend on it) |
 | numpy | 2.5.3 |
-| pandas | 3.0.5 |
+| pandas | 2.3.3 |
 | scipy | 1.18.1 |
 | chapkit | 2.0.1 |
+
+### Note on the statsforecast 2.0.1 -> 2.1.1 bump
+
+These fixtures were first produced with statsforecast 2.0.1 / pandas 3.0.5 / numba 0.67.0,
+and regenerated with statsforecast 2.1.1 / pandas 2.3.3 / no numba after the dependency
+pin changed (statsforecast 2.0.x ships no cp313 wheels, so the Docker build could not
+install it). The regenerated CSVs are **byte-identical** to the originals: 5400 / 5400 and
+900 / 900 sample cells unchanged, max absolute difference 0. The library bump did not move
+the numbers.
 
 ## Tolerance
 

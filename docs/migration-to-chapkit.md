@@ -52,7 +52,8 @@ copied into a temp workspace for every train and predict call.
 - Rewrote `pyproject.toml`:
   - build backend `setuptools` -> `uv_build` (`[tool.uv.build-backend] module-name = "chap_mstl_arima"`, `module-root = ""`, because the package sits at the repo root, not under `src/`).
   - `requires-python` `>=3.11,<3.14` -> `>=3.13` (chapkit 2 requires 3.13, and the `ghcr.io/dhis2-chap/chapkit-py` base image is 3.13).
-  - added `chapkit>=2.0.1,<3`; capped `statsforecast>=2.0.0,<3`; raised `pandas>=2.0` -> `>=2.2`.
+  - added `chapkit>=2.0.1,<3`; capped `statsforecast>=2.0.0,<3`; raised `pandas>=2.0` -> `>=2.2`
+    (both revised in step 8 to `statsforecast>=2.1.0,<3` and `pandas>=2.2,<3`).
   - `[project.optional-dependencies] dev` -> PEP 735 `[dependency-groups] dev` (what `uv sync --all-groups` and `uv sync --no-dev` understand), adding `pytest>=8` and `httpx>=0.28` (needed by `fastapi.testclient.TestClient`).
   - added `[tool.pytest.ini_options]` with `pythonpath = ["."]` so `tests/` can `from main import app` (the service module is a root-level file, not a package member).
   - added the ruff config used across the chapkit reference repos (`py313`, line length 120, `select = ["E", "W", "F", "I"]`).
@@ -88,17 +89,27 @@ uv run python -c "from statsforecast import StatsForecast"
 | pydantic | 2.13.5 |
 | fastapi | 0.141.1 |
 
+> **Superseded in step 8.** This resolution installs fine on macOS but cannot be built in
+> the Docker image: statsforecast 2.0.1 publishes no cp313 wheels. See
+> [step 8](#step-8---builddeps-pin-pandas-below-3-so-statsforecast-resolves-to-a-wheel-release)
+> for the corrected pins (statsforecast 2.1.1, pandas 2.3.3) and for why the decision
+> recorded below was wrong.
+
 ### Decisions and notes
 
-- **pandas 3 was left unpinned.** The plan flagged a risk that `statsforecast` might not
-  work under a resolved pandas 3.x, with a fallback of pinning `pandas>=2.2,<3` and
-  re-locking *before* producing any golden file. The pin was written first, then backed
-  out after an explicit smoke test: a `MSTL(season_length=12, trend_forecaster=AutoARIMA())`
+- **pandas 3 was left unpinned - and this was the one real mistake of the conversion.**
+  The plan flagged a risk that `statsforecast` might not work under a resolved pandas 3.x,
+  with a fallback of pinning `pandas>=2.2,<3`. The pin was written first, then backed out
+  after an explicit smoke test: a `MSTL(season_length=12, trend_forecaster=AutoARIMA())`
   fit plus `forecast(h=3, level=[68])` on a 60-point synthetic monthly series runs clean
-  on statsforecast 2.0.1 + pandas 3.0.5 + numpy 2.5.3. The full golden runs in step 2
-  confirm it on real data. So the repo ships with `pandas>=2.2` and no upper bound.
-- `statsforecast` resolves to **2.0.1**, not 2.1.x. 2.0.1 is what the index offers for
-  this requires-python; no pin was needed to get there.
+  on statsforecast 2.0.1 + pandas 3.0.5 + numpy 2.5.3, and the golden runs in step 2
+  confirmed it on real data. The test answered the question that was asked ("does it
+  *run*?") and not the question that mattered ("does it *install from a wheel on linux*?").
+  Step 8 undoes this.
+- `statsforecast` resolved to **2.0.1**, not 2.1.x, and the reason is the pandas pin:
+  statsforecast 2.1.x requires `pandas<3`, so allowing pandas 3 silently held statsforecast
+  back two minor versions. A transitive constraint quietly downgrading a direct dependency
+  is easy to miss when the only thing you look at is whether the import works.
 - `cyclopts` resolves to **4.x** even though the floor is `>=2.9`. The legacy CLI only uses
   `cyclopts.App()` and `@app.command()`, both unchanged in 4.x. Verified by running the
   legacy CLI in step 2 with this venv.
@@ -426,8 +437,10 @@ and chap-core matches predictions to requests positionally. A runner (or a futur
 refactor) that sorted the future frame would produce plausible-looking, wrong numbers
 without failing anything else.
 
-`JOB_TIMEOUT_SECONDS = 600`, generous because the first job in a session pays numba's JIT
-compilation on top of 18 AutoARIMA fits.
+`JOB_TIMEOUT_SECONDS = 600`, generous because a single monthly job fits 18 MSTL +
+AutoARIMA models in a subprocess after chapkit has copied the project into a fresh
+workspace. (Under statsforecast 2.0.1 it also paid numba's JIT compilation; 2.1.1 does not
+depend on numba - see step 8.)
 
 ### Results (macOS arm64)
 
@@ -538,12 +551,14 @@ The three project rules, verbatim from `chapkit_ewars_model/CLAUDE.md`: no emoji
 tool attribution in commits or PRs, Conventional Commits for messages, branches and PR
 titles.
 
-### Not verified locally
+### Not verified at the time
 
-The Docker daemon was not running on the machine this conversion was done on
-(`docker info` failed). Nothing in this step was executed locally: the image has never
-been built here. `ci.yml`'s `docker-build` job is what actually exercises it. That is a
-real gap and it is called out in the PR rather than papered over.
+The Docker daemon was not running when this step was written, so none of it was executed
+and the image had never been built. That gap is exactly what hid the dependency bug fixed
+in step 8: `uv sync --frozen` tried to compile `statsforecast` from source and there is no
+compiler in the base image. Once Docker came up, `make build` and `make test-docker` both
+passed - see the verification results below. **Build the image before you trust the
+lockfile.**
 
 ---
 
@@ -581,6 +596,142 @@ in step 3. Everything the two files carried now lives in the service:
 
 ---
 
+## Step 8 - `build(deps): pin pandas below 3 so statsforecast resolves to a wheel release`
+
+Added after the first `docker build` was attempted. **This step exists because step 1 got
+the dependency pins wrong in a way that only a Linux container build could reveal.**
+
+### The failure
+
+```
+make test-docker
+...
+Failed to build `statsforecast==2.0.1`
+  ...
+  No such file or directory: 'g++'
+```
+
+### Root cause
+
+`statsforecast` 2.0.1 and 2.0.2 publish **no cp313 wheels for any platform** - 20 wheels
+each, none of them `cp313`. So on Python 3.13 pip/uv always compiles the C++ extension
+from source. On macOS that silently works, because clang is present. On the
+`ghcr.io/dhis2-chap/chapkit-py` base image there is no compiler, and the build dies.
+
+Why was 2.0.1 selected at all? Because step 1 left pandas unpinned. statsforecast 2.1.x
+requires `pandas<3`; the resolver preferred pandas 3.0.5 and therefore backed statsforecast
+down to the newest release compatible with it, which is 2.0.1. A pandas preference
+silently chose an sdist-only version of a different package.
+
+```
+uv pip install --dry-run "statsforecast>=2.1"   # -> statsforecast 2.1.1 + pandas 2.3.3
+```
+
+statsforecast 2.1.1 ships cp313 wheels for `macosx_10_13_x86_64`, `macosx_11_0_arm64`,
+`manylinux_2_28_aarch64`, `manylinux_2_28_x86_64` and `win_amd64` - every platform this
+repo targets.
+
+### The fix
+
+```toml
+"statsforecast>=2.1.0,<3",
+"pandas>=2.2,<3",
+```
+
+The pandas cap exists **only** to keep statsforecast on a wheel release. There is no known
+pandas 3 incompatibility in this model's own code; the step 1 smoke test and goldens on
+pandas 3.0.5 were genuine. The comment in `pyproject.toml` says so, because otherwise a
+future maintainer will "helpfully" lift the cap.
+
+```
+uv lock          # Updated pandas 3.0.5 -> 2.3.3, statsforecast 2.0.1 -> 2.1.1,
+                 # Removed numba 0.67.0, Removed llvmlite 0.49.0
+uv sync --all-groups
+```
+
+Note the side effect: **statsforecast 2.1.1 no longer depends on numba**, so numba and
+llvmlite left the lock entirely. `NUMBA_CACHE_DIR=/tmp/numba_cache` stays in the Dockerfile
+anyway - it costs nothing and numba is a plausible future transitive dependency - but its
+comment was corrected so it does not claim a dependency that is not there.
+
+### Updated resolved versions (the ones every golden and every number below now reflect)
+
+| Package | Version |
+|---|---|
+| python | 3.13.14 (CPython, clang 22.1.3) |
+| chapkit | 2.0.1 |
+| servicekit | 2.0.2 |
+| statsforecast | **2.1.1** |
+| statsmodels | 0.15.0 |
+| utilsforecast | 0.2.15 |
+| numba | **not installed** |
+| numpy | 2.5.3 |
+| pandas | **2.3.3** |
+| scipy | 1.18.1 |
+| cyclopts | 4.25.2 |
+| pydantic | 2.13.5 |
+| fastapi | 0.141.1 |
+
+### Wheel availability audit
+
+To make sure statsforecast was the only offender, the whole runtime closure was exported
+and checked against PyPI:
+
+```
+uv export --frozen --no-dev --no-hashes -o <scratch>/req.txt
+```
+
+then, for each of the 96 pinned runtime packages, the PyPI JSON API
+(`https://pypi.org/pypi/<name>/<version>/json`) was queried for a wheel installable under
+cp313 on manylinux **x86_64 and aarch64** (a `py3-none-any` wheel counts for both).
+
+```
+checked 96 pinned runtime packages
+OK: 96   offenders: 0
+```
+
+The same script flags `statsforecast==2.0.1` and `==2.0.2` as `MISSING` (0 cp313 wheels),
+which is the control that proves it works. This check belongs in every migration, run
+**before** goldens are produced.
+
+### Goldens regenerated
+
+Both fixtures were regenerated from the legacy worktree with the identical procedure
+(see step 2): `__file__` provenance check, `train` then `predict`, monthly `predict` run
+twice and `cmp`'d (byte-identical again).
+
+**The regenerated CSVs are byte-identical to the statsforecast 2.0.1 / pandas 3.0.5 ones.**
+
+```
+git diff --stat tests/golden    # (no output)
+```
+
+| kind | rows | sample cols | cells identical | changed cells | max abs diff | max rel diff |
+|---|---|---|---|---|---|---|
+| monthly | 216 | 25 | 5400 / 5400 (100.00 %) | 0 | 0.000e+00 | 0.000e+00 |
+| weekly | 36 | 25 | 900 / 900 (100.00 %) | 0 | 0.000e+00 | 0.000e+00 |
+
+So the library bump is numerically a no-op here, and the conversion parity result
+(5400 / 5400 and 900 / 900 against the legacy CLI) is unaffected. Those are two separate
+claims and they are worth keeping separate in the PR: *statsforecast 2.0.1 -> 2.1.1 changed
+nothing*, and *the chapkit conversion changed nothing*.
+
+### Re-verified after the bump
+
+```
+uv run ruff format --check .   ->  9 files already formatted
+uv run ruff check .            ->  All checks passed!
+uv run pytest -v               ->  9 passed in 16.15s
+monthly: 5400 / 5400 cells exactly equal to the legacy golden output
+weekly:   900 /  900 cells exactly equal to the legacy golden output
+
+docker build ...               ->  succeeded in 20 s, everything installed from wheels
+make test-docker               ->  chapkit test monthly and weekly, ALL TESTS PASSED
+```
+
+
+---
+
 ## Verification results
 
 Run on macOS 27.0 arm64, against `uv run python main.py` on port 9090, at the tip of the
@@ -596,13 +747,13 @@ uv run ruff check .            ->  All checks passed!
 ### Tests
 
 ```
-uv run pytest -v   ->  9 passed in 17.75s
+uv run pytest -v   ->  9 passed in 16.15s
 
-5.21s  test_monthly_reproduces_legacy_golden
-3.66s  test_unseen_location_fallback
-3.63s  test_future_row_order_preserved
-3.61s  test_weekly_reproduces_legacy_golden
-1.56s  setup (shared monthly training artifact)
+4.66s  test_monthly_reproduces_legacy_golden
+3.67s  test_future_row_order_preserved
+3.11s  test_unseen_location_fallback
+3.09s  test_weekly_reproduces_legacy_golden
+1.55s  setup (shared monthly training artifact)
 0.01s  everything else
 
 monthly: 5400 / 5400 cells exactly equal to the legacy golden output
@@ -670,8 +821,23 @@ ships `PeriodType.any`.
 
 ### Docker
 
-Not run. The Docker daemon was unavailable on the conversion machine (`docker info`
-failed). The image has never been built. `ci.yml`'s `docker-build` job covers it.
+```
+docker build --build-arg GIT_REVISION=$(git rev-parse HEAD) -t chap-mstl-arima:latest .
+```
+
+Succeeds in **20 s** on an arm64 host; `uv sync --frozen --no-dev --no-install-project`
+installs the whole closure from wheels in 3.8 s, no compiler involved.
+
+```
+make test-docker
+```
+
+Builds the image, starts it on port 9000, waits for `/health`, then runs `chapkit test`
+against the container for both period types. **Both pass** (monthly and weekly,
+`Result: ALL TESTS PASSED`, ~6.5 s each); total 15.7 s.
+
+This is the check that failed before step 8 with
+`Failed to build statsforecast==2.0.1 ... No such file or directory: 'g++'`.
 
 ---
 
@@ -694,11 +860,26 @@ failed). The image has never been built. `ci.yml`'s `docker-build` job covers it
    comparison.
 6. **Exclude the frozen numeric core from `ruff`** *before* the first `ruff format .`.
    ruff >= 0.16 also formats Python code blocks inside Markdown.
-7. **Point `NUMBA_CACHE_DIR` at `/tmp`** for any numba-backed model, or the first job in a
-   read-only container fails.
+7. **Point `NUMBA_CACHE_DIR` (and `HOME`, `MPLCONFIGDIR`, `XDG_CACHE_HOME`) at `/tmp`**
+   for any numba-backed model, or the first job in a read-only container fails.
 8. **Test both period types** when the model declares `supported_period_type: any`, and
    remember `chapkit test --period-type weekly` needs `--rows 520 --predict-rows 300`.
 9. **Row order is part of the contract** for sampling models. Write the shuffled-future
    test.
 10. **chap-core 2.3.0 cannot consume `period_type: "any"`** from a chapkit service. Check
     this before promising `any` to a deployment.
+11. **Check that the resolved lock installs from *wheels* on `linux/amd64` and
+    `linux/arm64` before you produce any golden file.** "It imports and runs on my macOS
+    laptop" is not the same claim: macOS has a compiler, the chapkit base images do not.
+    Export the runtime closure (`uv export --frozen --no-dev --no-hashes`) and check each
+    pinned version against the PyPI JSON API for a cp313 manylinux wheel on both
+    architectures.
+12. **A newer transitive preference can silently downgrade a direct dependency to an
+    sdist-only release.** Here, leaving pandas unpinned pulled pandas 3, which is
+    incompatible with statsforecast 2.1.x, which pushed statsforecast back to 2.0.1 - the
+    last release with no cp313 wheels. Nothing warned; the model imported and produced
+    correct numbers. When you pin a version *to work around a different package*, say so in
+    a comment, or someone will lift the pin.
+13. **Run `docker build` early - before the goldens, not after the PR.** It is the only
+    check that exercises the target platform, and a dependency change after the goldens
+    exist means regenerating and re-justifying them.
