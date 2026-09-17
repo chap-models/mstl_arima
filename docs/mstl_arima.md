@@ -43,9 +43,13 @@ We fit per-location on `log1p(disease_cases)`, request `level=[68]` from
 `Normal(μ, σ)` per step, map back with `expm1`, clip at zero. (See
 `chap_mstl_arima/model.py`.)
 
-The knobs named in this document (`arima_stepwise`, `arima_approximation`,
-`season_length_monthly`, `season_length_weekly`, `n_samples`, `log_transform`,
-`random_seed`, `treat_missing_as_zero`) are the fields of the service config:
+The seasonal period `p` is fixed by the detected frequency: 52 for weekly data,
+12 for monthly (`_season_length` in `chap_mstl_arima/model.py`). It is deliberately not
+configurable.
+
+The knobs named in this document (`arima_stepwise`, `arima_approximation`, `n_samples`,
+`log_transform`, `random_seed`, `treat_missing_as_zero`) are the fields of the service
+config:
 `POST /api/v1/configs`, schema at `GET /api/v1/configs/$schema`. They were the
 `user_options` block of the repository's old `MLproject` file; see
 [`migration-to-chapkit.md`](migration-to-chapkit.md).

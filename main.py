@@ -19,9 +19,14 @@ from pydantic import Field, model_validator
 class MSTLArimaConfig(BaseConfig):
     """Tunables for a single train/predict run.
 
-    The field set is the `user_options` block of the old `MLproject`, one for
-    one, with `prediction_periods` added because chapkit's `BaseConfig` declares
-    it as a required CHAP-interpreted field.
+    The field set is the `user_options` block of the old `MLproject`, minus the
+    two `season_length_*` debug knobs (the seasonal period is now fixed at 52 for
+    weekly data and 12 for monthly), plus `prediction_periods`, which chapkit's
+    `BaseConfig` declares as a required CHAP-interpreted field.
+
+    `BaseConfig` allows extra fields, so a stored chap-core configuration that
+    still carries `season_length_monthly` is accepted; `ModelConfig.from_user_options`
+    filters unknown keys, so it never reaches the model.
     """
 
     prediction_periods: int = Field(
@@ -35,14 +40,6 @@ class MSTLArimaConfig(BaseConfig):
     log_transform: bool = Field(
         default=True,
         description="Fit on log1p(disease_cases)",
-    )
-    season_length_monthly: int = Field(
-        default=12,
-        description="Season length for monthly data",
-    )
-    season_length_weekly: int = Field(
-        default=52,
-        description="Season length for weekly data",
     )
     random_seed: int = Field(
         default=42,

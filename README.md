@@ -167,8 +167,6 @@ The full JSON schema is at `GET /api/v1/configs/$schema`.
 | `prediction_periods` | 3 | Number of periods to predict into the future |
 | `n_samples` | 100 | Number of forecast paths per (location, time_period) |
 | `log_transform` | true | Fit on `log1p(disease_cases)` |
-| `season_length_monthly` | 12 | STL seasonal period for monthly data |
-| `season_length_weekly` | 52 | STL seasonal period for weekly data |
 | `random_seed` | 42 | Sample reproducibility |
 | `arima_approximation` | false | Faster AutoARIMA fitting, drops the MA term - less calibrated |
 | `arima_stepwise` | true | Hyndman-Khandakar stepwise order selection |
@@ -176,6 +174,11 @@ The full JSON schema is at `GET /api/v1/configs/$schema`.
 
 `treat_missing_as_zero` is worth knowing about: DHIS2 does not store zeros, so a week with
 no reported cases often arrives as a gap rather than a `0`.
+
+The STL seasonal period is not configurable: it is 52 for weekly data and 12 for monthly,
+chosen from the detected `time_period` format. It used to be exposed as
+`season_length_weekly` / `season_length_monthly`; those were debug knobs and were removed.
+A config that still sets them is accepted and ignored.
 
 ## Numeric parity with the pre-chapkit model
 
