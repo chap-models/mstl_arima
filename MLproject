@@ -56,6 +56,10 @@ user_options:
     default: true
     title: AutoARIMA stepwise search
     type: boolean
+  treat_missing_as_zero:
+    default: false
+    title: Treat missing (NaN) target values as 0 reported cases instead of dropping them
+    type: boolean
 
 uv_env: pyproject.toml
 

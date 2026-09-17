@@ -58,6 +58,9 @@ def _build_model(cfg: ModelConfig, season_length: int) -> MSTL:
 def _prepare(historic_df: pd.DataFrame, cfg: ModelConfig) -> _FitInputs:
     freq = detect_frequency(historic_df)
     panel = to_long_panel(historic_df, freq)
+    if cfg.treat_missing_as_zero:
+        # DHIS2 does not store zero values, so missing weeks are usually zero cases.
+        panel["y"] = panel["y"].fillna(0.0)
     panel = panel.dropna(subset=["y"])
     if cfg.log_transform:
         panel["y"] = np.log1p(panel["y"].clip(lower=0))
@@ -82,12 +85,20 @@ class MSTLArimaModel:
         horizons = future_df.groupby("location").size()
         horizon = int(horizons.max())
 
-        sf = StatsForecast(models=[model], freq=inputs.freq, n_jobs=1)
-        fcst = sf.forecast(df=inputs.panel, h=horizon, level=[SIGMA_LEVEL])
-
         model_col = type(model).__name__  # "MSTL"
         lo_col = f"{model_col}-lo-{SIGMA_LEVEL}"
         hi_col = f"{model_col}-hi-{SIGMA_LEVEL}"
+
+        # MSTL extrapolates the last seasonal cycle and crashes on series
+        # shorter than the horizon; such locations use the unseen-location
+        # fallback below instead.
+        n_obs = inputs.panel.groupby("unique_id")["y"].transform("size")
+        panel = inputs.panel[n_obs >= horizon]
+        if panel.empty:
+            fcst = pd.DataFrame(columns=["unique_id", "ds", model_col])
+        else:
+            sf = StatsForecast(models=[model], freq=inputs.freq, n_jobs=1)
+            fcst = sf.forecast(df=panel, h=horizon, level=[SIGMA_LEVEL])
 
         fcst_idx = fcst.copy()
         fcst_idx["unique_id"] = fcst_idx["unique_id"].astype(str)
