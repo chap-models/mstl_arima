@@ -1,0 +1,3 @@
+user_option_values:
+  n_samples: 25
+  random_seed: 42
