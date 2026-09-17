@@ -478,3 +478,69 @@ model core.
 `or` chain in `_load_config` was joined onto a single line. Semantically identical, and
 the file is glue rather than numerics - but it means "moved verbatim" is now "moved
 verbatim, then formatted".
+
+---
+
+## Step 5 - `ci: add docker packaging, makefile and github workflows`
+
+### `Dockerfile`
+
+Taken from the chapkit `shell-py` scaffold template
+(`chapkit/src/chapkit/cli/templates/Dockerfile.jinja2`, the `else` branch), with two
+changes:
+
+- `COPY main.py ./` and `COPY chap_mstl_arima/ ./chap_mstl_arima/` instead of the
+  template's `COPY scripts/ ./scripts/` - this repo's shell entry point is a package, not
+  a `scripts/` directory.
+- `NUMBA_CACHE_DIR=/tmp/numba_cache` added next to the template's `HOME`, `MPLCONFIGDIR`
+  and `XDG_CACHE_HOME`. statsforecast's numba kernels try to write a JIT cache next to the
+  installed package; with `read_only: true` in compose that directory is not writable and
+  the first prediction job fails. Any statsforecast / numba model needs this line.
+
+`--no-install-project` is correct here: the project is never pip-installed into the image.
+`ShellModelRunner` copies `/work` into a scratch workspace and runs
+`python -m chap_mstl_arima` with that workspace as `cwd`, and `cwd` is on `sys.path`.
+
+### `.dockerignore`
+
+The scaffold list plus `example_data/`, `tests/`, `docs/` and `scripts/`. These are not
+copied by the Dockerfile anyway, so the entries are belt and braces - but they also
+document the intent: the smaller the image's `/work`, the smaller every per-job workspace
+copy.
+
+### `compose.yml` / `compose.ghcr.yml`
+
+`compose.yml` follows the ewars reference: host port 9090 -> container 8000, `init: true`,
+`read_only: true`, `no-new-privileges`, `cap_drop: ALL`, `user: chapkit:chapkit`, a named
+volume at `/work/data` for the SQLite database and a 2 GB tmpfs at `/tmp` for ML workspaces
+and the numba cache. The chap-core self-registration environment variables are present but
+commented out; note the `$$register` double dollar, which compose needs to emit a literal
+`$`. `compose.ghcr.yml` points at `ghcr.io/chap-models/mstl_arima:latest`.
+
+### `Makefile`
+
+`run` (local, port 9090), `build`, `run-ghcr`, `test` (pytest), `test-docker` (build,
+start on port 9000, wait for `/health`, then `chapkit test` monthly **and** weekly),
+`parity` (both kinds against a running service), `lint` / `check`, `clean`.
+
+### Workflows
+
+`ci.yml` has two jobs, both `timeout-minutes: 30`: `lint-and-test` (uv + Python 3.13 +
+`make check` + `make test`, which includes golden parity) and `docker-build` (buildx with
+GHA cache, start the container, poll `/health`, `chapkit test --timeout 300 --verbose`,
+dump container logs on failure). `publish-docker.yml` is the standard chap-models publish
+workflow, pushing to `ghcr.io/${{ github.repository }}` with build provenance attestation
+and `GIT_REVISION=${{ github.sha }}`.
+
+### `CLAUDE.md`
+
+The three project rules, verbatim from `chapkit_ewars_model/CLAUDE.md`: no emojis, no
+tool attribution in commits or PRs, Conventional Commits for messages, branches and PR
+titles.
+
+### Not verified locally
+
+The Docker daemon was not running on the machine this conversion was done on
+(`docker info` failed). Nothing in this step was executed locally: the image has never
+been built here. `ci.yml`'s `docker-build` job is what actually exercises it. That is a
+real gap and it is called out in the PR rather than papered over.

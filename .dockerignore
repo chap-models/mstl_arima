@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.py[cod]
+.git/
+.github/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+data/
+*.db*
+.DS_Store
+# Not needed at runtime; the shell runner copies the image's /work into every
+# workspace, so keeping these out also keeps each job's copy small.
+example_data/
+tests/
+docs/
+scripts/
