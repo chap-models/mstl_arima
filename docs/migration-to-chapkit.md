@@ -138,9 +138,8 @@ against later.
 
 Weekly data is not optional decoration. `supported_period_type: any` means the service
 claims to handle both, and the two code paths differ (`detect_frequency` -> `W-MON` vs
-`MS`, `season_length_weekly=52` vs `season_length_monthly=12`, and a different
-`period_to_timestamp` branch). A monthly-only parity check would leave half the model
-unverified.
+`MS`, a seasonal period of 52 vs 12, and a different `period_to_timestamp` branch).
+A monthly-only parity check would leave half the model unverified.
 
 ### Capturing the baseline
 
@@ -388,7 +387,7 @@ tests/
 ├── __init__.py          # makes conftest import exactly once, as tests.conftest
 ├── conftest.py          # DATABASE_URL + session TestClient + golden_options
 ├── helpers.py           # df_payload / wait_for_job / create_config / train / predict
-├── test_service.py      # 9 tests
+├── test_service.py      # 9 tests (10 after step 9)
 └── golden/              # from step 2
 ```
 
@@ -417,13 +416,13 @@ The tests drive the ASGI app in-process through `TestClient`, but the jobs still
 `python -m chap_mstl_arima` subprocesses into real temp workspaces. Nothing about the
 runner path is mocked.
 
-### The 9 tests
+### The 9 tests (a tenth is added in step 9)
 
 | Test | What it pins down |
 |---|---|
 | `test_health` | service boots, database and registration subsystems healthy |
 | `test_info` | `id`, `display_name`, `period_type == "any"`, `required_covariates == []`, `allow_free_additional_continuous_covariates is False`, author metadata |
-| `test_config_schema_defaults` | all 9 config fields present in `GET /api/v1/configs/$schema` with the MLproject defaults and a non-empty description; `required` is empty |
+| `test_config_schema_defaults` | every config field present in `GET /api/v1/configs/$schema` with the MLproject defaults and a non-empty description; `required` is empty (9 fields at the time; 7 after step 9) |
 | `test_config_hoists_user_option_values` | chap-core-shaped POST -> `n_samples == 7`, `prediction_periods == 3`, no leftover `user_option_values` extra field |
 | `test_config_flat_fields_win_over_nested` | unit test on the class: flat only, nested only, and both (flat wins) |
 | `test_monthly_reproduces_legacy_golden` | exact column list, exact `(time_period, location)` order, `assert_allclose(rtol=PARITY_RTOL, atol=0)` over 5400 cells |
@@ -585,7 +584,7 @@ in step 3. Everything the two files carried now lives in the service:
 | MLproject | Now |
 |---|---|
 | `meta_data.*` | `MLServiceInfo` / `ModelMetadata` in `main.py` |
-| `user_options.*` | `MSTLArimaConfig` fields, with the MLproject titles as `Field(description=...)` |
+| `user_options.*` | `MSTLArimaConfig` fields, with the MLproject titles as `Field(description=...)`; `season_length_monthly` and `season_length_weekly` were dropped in step 9 |
 | `supported_period_type` | `period_type=PeriodType.any` |
 | `required_covariates`, `allow_free_additional_continuous_covariates` | same names on `MLServiceInfo` |
 | `target: disease_cases` | implicit; chapkit has no per-service target field |
@@ -732,6 +731,82 @@ make test-docker               ->  chapkit test monthly and weekly, ALL TESTS PA
 
 ---
 
+## Step 9 - `refactor(model): drop season_length_monthly and season_length_weekly options`
+
+A post-conversion change requested by the model author: the two `season_length_*` options
+were only ever debug knobs and nobody should be tuning them from a deployment. This is the
+first step that **deliberately breaks the frozen-core rule** - `model.py` and `config.py`
+are no longer byte-identical to `20ef2f6` - so it is worth being precise about what
+changed and why the goldens survived.
+
+### The change
+
+`chap_mstl_arima/config.py`: the two fields are gone from `ModelConfig`.
+`from_user_options` is untouched, and it already filters unknown keys, so an old
+configuration that still passes `season_length_monthly` is silently ignored rather than
+raising.
+
+`chap_mstl_arima/model.py`: `_season_length` no longer takes a config.
+
+```python
+def _season_length(freq: str) -> int:
+    """Seasonal period for the detected frequency: 52 for weekly data, 12 for monthly."""
+    return 52 if freq.startswith("W") else 12
+```
+
+`main.py`: the two `Field(...)` declarations are gone from `MSTLArimaConfig`, leaving
+7 tunables plus `prediction_periods`.
+
+The whole diff against the pre-conversion code is now exactly this and nothing else:
+
+```
+git diff 20ef2f6 -- chap_mstl_arima/model.py chap_mstl_arima/config.py
+```
+
+shows two hunks in `config.py`/`model.py` removing the fields and hard-coding 52/12, plus
+the one-line call-site change. `chap_mstl_arima/io_utils.py` is still byte-identical.
+
+### Why the goldens did not move
+
+The removed fields defaulted to exactly the values now hard-coded (12 monthly, 52 weekly),
+and `tests/golden/config.yaml` never set them - it only sets `n_samples: 25` and
+`random_seed: 42`. So every golden run already used 12 and 52. The fixtures were **not**
+regenerated, and both parity tests still pass exactly:
+
+```
+monthly: 5400 / 5400 cells exactly equal to the legacy golden output
+weekly:   900 /  900 cells exactly equal to the legacy golden output
+```
+
+This is the payoff of having a numeric gate before making behavioural edits: "removing an
+option cannot change results because its default equalled the constant" is an argument, and
+the golden test is the proof.
+
+### Backwards compatibility
+
+chap-core stores configurations; a saved one may still carry `season_length_monthly`.
+`BaseConfig` has `extra="allow"`, so it is accepted (not a 422), it is written into
+`config.yml` under `user_option_values` like any other key, and
+`ModelConfig.from_user_options` drops it before the model is built.
+`test_legacy_season_length_options_are_accepted_and_ignored` walks that whole path -
+HTTP body, stored config, `dump_config_yaml`, `ModelConfig` - without paying for a
+train/predict job.
+
+Removing a config field is therefore a non-breaking change *only* because of that
+`extra="allow"` plus the `from_user_options` filter. A stricter config class would have
+turned every stored configuration into a 422 on the next run.
+
+### Verified
+
+```
+uv run pytest -v               ->  10 passed
+uv run ruff format --check .   ->  clean
+uv run ruff check .            ->  clean
+```
+
+
+---
+
 ## Verification results
 
 Run on macOS 27.0 arm64, against `uv run python main.py` on port 9090, at the tip of the
@@ -747,12 +822,12 @@ uv run ruff check .            ->  All checks passed!
 ### Tests
 
 ```
-uv run pytest -v   ->  9 passed in 16.15s
+uv run pytest -v   ->  10 passed in 16.35s
 
-4.66s  test_monthly_reproduces_legacy_golden
-3.67s  test_future_row_order_preserved
+4.67s  test_monthly_reproduces_legacy_golden
+3.18s  test_weekly_reproduces_legacy_golden
 3.11s  test_unseen_location_fallback
-3.09s  test_weekly_reproduces_legacy_golden
+3.08s  test_future_row_order_preserved
 1.55s  setup (shared monthly training artifact)
 0.01s  everything else
 
@@ -883,3 +958,12 @@ This is the check that failed before step 8 with
 13. **Run `docker build` early - before the goldens, not after the PR.** It is the only
     check that exercises the target platform, and a dependency change after the goldens
     exist means regenerating and re-justifying them.
+14. **Removing a config field is only non-breaking because `BaseConfig` allows extras.**
+    chap-core stores configurations, so one may still carry a field you deleted. It is
+    accepted, it lands in `config.yml`, and the script's own filter
+    (`ModelConfig.from_user_options`) is what keeps it away from the model. Keep that
+    filter, and test the whole path.
+15. **A parity gate pays for itself the first time you change behaviour on purpose.**
+    Dropping the `season_length_*` options was safe because their defaults equalled the
+    constants that replaced them - but that is an argument, and the golden test is the
+    proof. Build the gate before you start editing.

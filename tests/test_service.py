@@ -12,8 +12,11 @@ import os
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
+from chapkit.ml.runner import dump_config_yaml
 from fastapi.testclient import TestClient
 
+from chap_mstl_arima.config import ModelConfig
 from main import MSTLArimaConfig
 from tests.helpers import (
     EXAMPLE_DATA,
@@ -73,7 +76,7 @@ def test_info(client: TestClient) -> None:
 
 
 def test_config_schema_defaults(client: TestClient) -> None:
-    """Every MLproject user_option is exposed with its MLproject default."""
+    """Every surviving MLproject user_option is exposed with its MLproject default."""
     schema = client.get("/api/v1/configs/$schema").json()
     properties = schema["properties"]
 
@@ -81,8 +84,6 @@ def test_config_schema_defaults(client: TestClient) -> None:
         "prediction_periods": 3,
         "n_samples": 100,
         "log_transform": True,
-        "season_length_monthly": 12,
-        "season_length_weekly": 52,
         "random_seed": 42,
         "arima_approximation": False,
         "arima_stepwise": True,
@@ -92,6 +93,11 @@ def test_config_schema_defaults(client: TestClient) -> None:
         assert field in properties, f"{field} missing from config schema"
         assert properties[field]["default"] == default, field
         assert properties[field].get("description"), f"{field} has no description"
+
+    # The season_length_* knobs were debug-only and are gone; the seasonal period
+    # is fixed at 52 for weekly data and 12 for monthly.
+    assert "season_length_monthly" not in properties
+    assert "season_length_weekly" not in properties
 
     # No field may be required: chap-core posts only user_option_values.
     assert schema.get("required", []) == []
@@ -118,6 +124,37 @@ def test_config_hoists_user_option_values(client: TestClient) -> None:
     assert data["prediction_periods"] == 3
     # The nested dict must not survive as an extra field.
     assert "user_option_values" not in data
+
+
+def test_legacy_season_length_options_are_accepted_and_ignored(client: TestClient) -> None:
+    """A stored chap-core configuration may still carry the removed season_length knobs.
+
+    It has to be accepted (`BaseConfig` allows extra fields) and it has to not reach
+    the model. This walks the whole config path - HTTP body, stored config, the
+    config.yml the shell runner writes, and the ModelConfig the script builds from it -
+    without paying for a train/predict job.
+    """
+    response = client.post(
+        "/api/v1/configs",
+        json={
+            "name": "pytest-legacy-season-length",
+            "data": {"user_option_values": {"season_length_monthly": 6, "n_samples": 7}},
+        },
+    )
+    assert response.status_code in (200, 201), response.text
+
+    data = client.get(f"/api/v1/configs/{response.json()['id']}").json()["data"]
+    assert data["n_samples"] == 7
+    assert data["season_length_monthly"] == 6, "extra fields must survive, not 422"
+
+    # It is carried into config.yml under user_option_values, like any other key ...
+    written = yaml.safe_load(dump_config_yaml(MSTLArimaConfig.model_validate(data), "chap_core"))
+    assert written["user_option_values"]["season_length_monthly"] == 6
+
+    # ... and ModelConfig.from_user_options drops it, so the model never sees it.
+    model_config = ModelConfig.from_user_options(written["user_option_values"])
+    assert model_config.n_samples == 7
+    assert not hasattr(model_config, "season_length_monthly")
 
 
 def test_config_flat_fields_win_over_nested() -> None:
