@@ -1,31 +1,72 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.8,<0.16"]
+build-backend = "uv_build"
 
 [project]
 name = "chap-mstl-arima"
-version = "0.1.0"
-description = "MSTL + AutoARIMA baseline as a chap-compatible MLproject"
+version = "0.2.0"
+description = "MSTL + AutoARIMA baseline for CHAP, packaged as a chapkit ML service"
 readme = "README.md"
-license = {text = "MIT"}
-authors = [{name = "Knut Rand", email = "knutdrand@gmail.com"}]
-requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Knut Rand", email = "knutdrand@gmail.com" }]
+requires-python = ">=3.13"
 dependencies = [
-    "statsforecast>=2.0.0",
+    "chapkit>=2.1.0,<3",
+    # statsforecast 2.0.x publishes no cp313 wheels, so it compiles from source and the
+    # Docker build fails on the wheel-only base image ("No such file or directory: g++").
+    # 2.1.x ships cp313 wheels for macOS arm64/x86_64, manylinux aarch64/x86_64 and win,
+    # but requires pandas<3 - hence the pandas cap, which exists to keep statsforecast on
+    # a wheel release rather than for any pandas 3 incompatibility of our own.
+    "statsforecast>=2.1.0,<3",
     "numpy>=1.26",
-    "pandas>=2.0",
+    "pandas>=2.2,<3",
     "scipy>=1.11",
     "pyyaml>=6.0",
     "cyclopts>=2.9",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
-    "pytest>=8.0",
+    "pytest>=8",
+    "httpx2>=2.13",
     "ruff>=0.5",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["chap_mstl_arima*"]
-exclude = ["tests*", "scripts*", "configurations*", "docs*"]
+[tool.uv.build-backend]
+module-name = "chap_mstl_arima"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    # Starlette 1.6.0 still imports anyio.abc.BlockingPortal, which anyio 4.15 deprecated.
+    # Upstream issue, not ours; drop this line once a Starlette release moves to anyio.from_thread.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+# Two kinds of file ruff must not rewrite:
+#   - the numeric core, frozen at its pre-conversion bytes so that
+#     `git diff <base-commit> -- chap_mstl_arima/{model,io_utils,config}.py` stays
+#     empty and the numeric parity claim is provable by inspection. Reformatting it
+#     would be cosmetic churn on the only part of the repo that must not move.
+#   - Markdown, because ruff >= 0.16 formats Python code blocks inside it and the
+#     documentation snippets are wrapped for reading, not for the formatter.
+extend-exclude = [
+    "chap_mstl_arima/config.py",
+    "chap_mstl_arima/io_utils.py",
+    "chap_mstl_arima/model.py",
+    "*.md",
+]
+
+[tool.ruff.lint]
+fixable = ["ALL"]
+select = ["E", "W", "F", "I"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false

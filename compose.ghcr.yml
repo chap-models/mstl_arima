@@ -1,0 +1,11 @@
+services:
+  chap_mstl_arima:
+    image: ghcr.io/chap-models/mstl_arima:latest
+    pull_policy: always
+    ports:
+      - "9090:8000"
+    volumes:
+      - ck_chap_mstl_arima_data:/work/data
+
+volumes:
+  ck_chap_mstl_arima_data:

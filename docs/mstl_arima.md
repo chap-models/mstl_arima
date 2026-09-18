@@ -39,8 +39,20 @@ return MSTL(
 
 We fit per-location on `log1p(disease_cases)`, request `level=[68]` from
 `forecast()` to get a 68 % predictive interval, recover σ as
-`(hi − lo) / (2·Φ⁻¹(0.84))`, sample 100 draws from `Normal(μ, σ)` per step,
-map back with `expm1`, clip at zero. (See `chap_mstl_arima/model.py`.)
+`(hi − lo) / (2·Φ⁻¹(0.84))`, sample `n_samples` draws (default 100) from
+`Normal(μ, σ)` per step, map back with `expm1`, clip at zero. (See
+`chap_mstl_arima/model.py`.)
+
+The seasonal period `p` is fixed by the detected frequency: 52 for weekly data,
+12 for monthly (`_season_length` in `chap_mstl_arima/model.py`). It is deliberately not
+configurable.
+
+The knobs named in this document (`arima_stepwise`, `arima_approximation`, `n_samples`,
+`log_transform`, `random_seed`, `treat_missing_as_zero`) are the fields of the service
+config:
+`POST /api/v1/configs`, schema at `GET /api/v1/configs/$schema`. They were the
+`user_options` block of the repository's old `MLproject` file; see
+[`migration-to-chapkit.md`](migration-to-chapkit.md).
 
 The rest of this document explains *what* MSTL and AutoARIMA actually do.
 
@@ -130,7 +142,7 @@ gone.
    `p` or `q` by ±1 and refit; keep the best AICc; repeat until no
    neighbouring step improves. This is fast (O(10-30) ARIMA fits) but can
    get stuck in local minima.
-4. **Full search** (`stepwise=False`, in `configurations/auto_arima_best.yaml`).
+4. **Full search** (`stepwise=False`, i.e. `arima_stepwise: false` in the service config).
    Try every `(p, q)` up to `max_p, max_q` (default 5 each). Slow but
    exhaustive — our HPO sweep showed this gave roughly +0.03 log-CRPS on
    the small `laos_subset.csv` but was 7× slower on full LAO and 30× slower

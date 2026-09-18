@@ -7,8 +7,6 @@ from dataclasses import dataclass
 class ModelConfig:
     n_samples: int = 100
     log_transform: bool = True
-    season_length_monthly: int = 12
-    season_length_weekly: int = 52
     random_seed: int = 42
     arima_approximation: bool = False
     arima_stepwise: bool = True
