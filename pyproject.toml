@@ -39,6 +39,11 @@ module-root = ""
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+filterwarnings = [
+    # Starlette 1.6.0 still imports anyio.abc.BlockingPortal, which anyio 4.15 deprecated.
+    # Upstream issue, not ours; drop this line once a Starlette release moves to anyio.from_thread.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
+]
 
 [tool.ruff]
 target-version = "py313"
