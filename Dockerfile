@@ -1,5 +1,5 @@
 # chap_mstl_arima Dockerfile
-FROM ghcr.io/dhis2-chap/chapkit-py:latest
+FROM ghcr.io/dhis2-chap/chapkit-py:latest@sha256:107479a76c4964c08e2125433d7728894d93e2cd5695a51b621b206c299cffd2
 
 # Build steps run as root; the service itself runs as the unprivileged `chapkit`
 # user (the switch happens right before CMD). Same posture as chap-core's own
