@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "latest"
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install deps (incl. dev)
+        run: uv sync --all-groups
+      - name: Lint
+        run: make check
+      # Includes the golden parity tests. PARITY_RTOL / PARITY_ATOL (default 1e-6)
+      # absorb last-ulp BLAS / libm differences between this runner and the machine
+      # the goldens were produced on; shape, columns and row order are always exact.
+      - name: Test (in-process FastAPI TestClient, incl. golden parity)
+        run: make test
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # arm64-only break shows up on the PR instead of in the publish run.
+      - name: Build both published platforms (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: chap-mstl-arima:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start container
+        run: docker run -d --name chapkit-ci -p 8000:8000 chap-mstl-arima:ci
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:8000/health | grep -q '"healthy"'; then
+              echo "Service healthy after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Service did not become healthy within 90s"
+          exit 1
+      - name: Install uv
+        uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "latest"
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install deps (incl. dev)
+        run: uv sync --all-groups
+      - name: Run chapkit test against container
+        run: uv run chapkit test --url http://localhost:8000 --timeout 300 --verbose
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs chapkit-ci
+      - name: Stop container
+        if: always()
+        run: docker rm -f chapkit-ci

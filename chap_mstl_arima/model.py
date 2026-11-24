@@ -41,8 +41,9 @@ class _FitInputs:
     season_length: int
 
 
-def _season_length(cfg: ModelConfig, freq: str) -> int:
-    return cfg.season_length_weekly if freq.startswith("W") else cfg.season_length_monthly
+def _season_length(freq: str) -> int:
+    """Seasonal period for the detected frequency: 52 for weekly data, 12 for monthly."""
+    return 52 if freq.startswith("W") else 12
 
 
 def _build_model(cfg: ModelConfig, season_length: int) -> MSTL:
@@ -64,7 +65,7 @@ def _prepare(historic_df: pd.DataFrame, cfg: ModelConfig) -> _FitInputs:
     panel = panel.dropna(subset=["y"])
     if cfg.log_transform:
         panel["y"] = np.log1p(panel["y"].clip(lower=0))
-    return _FitInputs(panel=panel, freq=freq, season_length=_season_length(cfg, freq))
+    return _FitInputs(panel=panel, freq=freq, season_length=_season_length(freq))
 
 
 class MSTLArimaModel:
