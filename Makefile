@@ -26,7 +26,7 @@ run:
 
 build:
 	@echo ">>> Building $(IMAGE)"
-	@docker build --build-arg GIT_REVISION=$(shell git rev-parse HEAD 2>/dev/null) -t $(IMAGE) .
+	@docker build --no-cache --build-arg GIT_REVISION=$(shell git rev-parse HEAD 2>/dev/null) -t $(IMAGE) .
 
 run-ghcr:
 	@echo ">>> Running $(GHCR_IMAGE) on :9090"
