@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           version: "latest"
       - name: Set up Python
@@ -61,7 +61,7 @@ jobs:
           echo "Service did not become healthy within 90s"
           exit 1
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           version: "latest"
       - name: Set up Python
